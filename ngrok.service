@@ -1,0 +1,12 @@
+Ini, TOML
+[Unit]
+Description=ngrok tunnel
+After=network.target trading.service # Ensures Flask starts first
+
+[Service]
+ExecStart=/usr/local/bin/ngrok http 5000
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
