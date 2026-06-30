@@ -1,0 +1,78 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © trading_bot / Flash Dump Strategy v1.0 — Short Only
+//@version=6
+strategy(
+ title         = "Flash Dump Strategy [Short Only]",
+ shorttitle    = "FD SHORT",
+ overlay       = true,
+ initial_capital = 10000,
+ default_qty_type  = strategy.percent_of_equity,
+ default_qty_value = 100,
+ commission_type   = strategy.commission.percent,
+ commission_value  = 0.05,
+ slippage      = 2,
+ calc_on_every_tick = false
+)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+
+i_atr_len   = input.int(14,    "ATR Lookback (N)",        minval=1,   group="Dump Detection")
+i_atr_mult  = input.float(3.0, "ATR Multiplier (X)",      minval=0.1, step=0.1, group="Dump Detection")
+i_vol_len   = input.int(20,    "Volume SMA Lookback (M)", minval=1,   group="Dump Detection")
+i_vol_mult  = input.float(2.5, "Volume Multiplier (Y)",   minval=0.1, step=0.1, group="Dump Detection")
+
+i_sl_pct    = input.float(10.0, "Stop Loss %",  minval=0.1, step=0.5, group="Risk Management",
+              tooltip="Stop loss as % above entry (short position).")
+i_tp_pct    = input.float(30.0, "Take Profit %", minval=0.1, step=0.5, group="Risk Management",
+              tooltip="Take profit as % below entry (short position).")
+
+// ─────────────────────────────────────────────
+// DETECTION
+// ─────────────────────────────────────────────
+
+body        = open - close
+atr         = ta.atr(i_atr_len)
+vol_sma     = ta.sma(volume, i_vol_len)
+
+flash_dump  = close < open
+           and body > atr * i_atr_mult
+           and volume > vol_sma * i_vol_mult
+
+// ─────────────────────────────────────────────
+// STRATEGY — SHORT ONLY
+// ─────────────────────────────────────────────
+
+// Enter short on flash dump (bar close), one trade at a time
+if flash_dump and strategy.position_size == 0
+    strategy.entry("Short", strategy.short, comment="⚠️ FLASH DUMP")
+
+// Calculate SL / TP from actual entry price once in a trade
+entry_price = strategy.position_avg_price
+sl_price    = entry_price * (1 + i_sl_pct / 100)
+tp_price    = entry_price * (1 - i_tp_pct / 100)
+
+if strategy.position_size < 0
+    strategy.exit("Exit", "Short",
+     stop   = sl_price,
+     limit  = tp_price,
+     comment_loss = "SL hit",
+     comment_profit = "TP hit")
+
+// ─────────────────────────────────────────────
+// VISUALS
+// ─────────────────────────────────────────────
+
+bgcolor(flash_dump ? color.new(color.red, 85) : na)
+
+plotshape(flash_dump, "Flash Dump", shape.triangledown,
+          location.abovebar, color.red, size=size.small, text="SHORT")
+
+// SL / TP reference lines while in trade
+plot(strategy.position_size < 0 ? sl_price : na, "Stop Loss",
+     color.new(color.red, 20), 1, plot.style_linebr)
+plot(strategy.position_size < 0 ? tp_price : na, "Take Profit",
+     color.new(color.green, 20), 1, plot.style_linebr)
+plot(strategy.position_size < 0 ? entry_price : na, "Entry",
+     color.new(color.yellow, 30), 1, plot.style_linebr)

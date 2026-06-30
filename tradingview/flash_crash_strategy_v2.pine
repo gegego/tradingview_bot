@@ -1,0 +1,106 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © trading_bot / Flash Crash Strategy v2 — Short Only, ROC + Trailing
+//@version=6
+strategy(
+ title         = "Flash Crash Strategy v2 [Short]",
+ shorttitle    = "FC ST v2",
+ overlay       = true,
+ initial_capital = 10000,
+ default_qty_type  = strategy.percent_of_equity,
+ default_qty_value = 10,
+ commission_type   = strategy.commission.percent,
+ commission_value  = 0.05,
+ slippage      = 2,
+ calc_on_every_tick = false
+)
+
+// ─────────────────────────────────────────────
+// INPUTS — DETECTION (velocity-first)
+// ─────────────────────────────────────────────
+
+// Primary: rate-of-change (catches cascades early, immune to ATR self-inflation)
+i_roc_len   = input.int(3,     "ROC Lookback (K bars)",  minval=1, group="Crash Detection",
+              tooltip="Cumulative % drop is measured over the last K bars.")
+i_roc_thr   = input.float(-4.0,"ROC Threshold % (drop over K)", maxval=0.0, step=0.5, group="Crash Detection",
+              tooltip="Fire when price has dropped more than this % over K bars.")
+
+// Volume confirmation (shared by both triggers)
+i_vol_len   = input.int(20,    "Volume SMA Lookback (M)", minval=1, group="Crash Detection")
+i_vol_mult  = input.float(1.7, "Volume Multiplier (Y)",   minval=0.1, step=0.1, group="Crash Detection")
+
+// Secondary: single violent candle (kept as OR condition)
+i_atr_len   = input.int(14,    "ATR Lookback (N)",        minval=1, group="Crash Detection")
+i_atr_mult  = input.float(2.5, "ATR Body Multiplier (X)", minval=0.1, step=0.1, group="Crash Detection")
+
+// ─────────────────────────────────────────────
+// INPUTS — RISK (trailing exit, ride it down)
+// ─────────────────────────────────────────────
+
+i_sl_pct    = input.float(10.0, "Initial Stop Loss %",          minval=0.1, step=0.5, group="Risk Management",
+              tooltip="Hard protective stop above entry (short). Active until the trail ratchets tighter.")
+i_trail_pct = input.float(15.0, "Trailing Stop % (from low)",   minval=0.1, step=0.5, group="Risk Management",
+              tooltip="Exit when price bounces this % off the lowest low since entry. Wide enough to ride a crash through normal chop.")
+
+// ─────────────────────────────────────────────
+// INPUTS — BACKTEST WINDOW (optional, for isolating one event)
+// ─────────────────────────────────────────────
+
+i_use_win   = input.bool(false, "Limit trading to date window", group="Backtest Window")
+i_win_start = input.time(timestamp("2026-06-08T00:00:00+0000"), "Window start (UTC)", group="Backtest Window")
+i_win_end   = input.time(timestamp("2026-06-09T12:00:00+0000"), "Window end (UTC)",   group="Backtest Window")
+in_window   = not i_use_win or (time >= i_win_start and time <= i_win_end)
+
+// ─────────────────────────────────────────────
+// DETECTION
+// ─────────────────────────────────────────────
+
+roc         = (close - close[i_roc_len]) / close[i_roc_len] * 100
+vol_sma     = ta.sma(volume, i_vol_len)
+vol_ok      = volume > vol_sma * i_vol_mult
+atr         = ta.atr(i_atr_len)
+body        = open - close
+bearish     = close < open
+
+roc_trig    = roc < i_roc_thr and vol_ok            // fast bleed / cascade
+candle_trig = body > atr * i_atr_mult and vol_ok    // single violent candle
+crash       = bearish and (roc_trig or candle_trig)
+
+// ─────────────────────────────────────────────
+// STRATEGY — SHORT ONLY w/ TRAILING EXIT
+// ─────────────────────────────────────────────
+
+if crash and strategy.position_size == 0 and in_window
+    strategy.entry("Short", strategy.short, comment="⚠️ CRASH")
+
+// Force-flat once the window closes (clean isolated-event measurement)
+if i_use_win and time > i_win_end and strategy.position_size != 0
+    strategy.close_all(comment="Window end")
+
+// Track lowest low since entry → ratcheting trailing stop
+var float trail_anchor = na
+if strategy.position_size < 0
+    trail_anchor := na(trail_anchor) ? low : math.min(trail_anchor, low)
+else
+    trail_anchor := na
+
+entry_price = strategy.position_avg_price
+hard_stop   = entry_price * (1 + i_sl_pct   / 100)
+trail_stop  = (na(trail_anchor) ? entry_price : trail_anchor) * (1 + i_trail_pct / 100)
+stop_level  = math.min(hard_stop, trail_stop)       // short: lower stop = tighter, trail takes over as price falls
+
+if strategy.position_size < 0
+    strategy.exit("Exit", "Short", stop = stop_level, comment="Stop/Trail")
+
+// ─────────────────────────────────────────────
+// VISUALS
+// ─────────────────────────────────────────────
+
+bgcolor(crash ? color.new(color.red, 85) : na)
+
+plotshape(crash, "Crash Signal", shape.triangledown, location.abovebar,
+          color.red, size=size.small, text="SHORT")
+
+plot(strategy.position_size < 0 ? stop_level   : na, "Trailing Stop",
+     color.new(color.red, 20), 1, plot.style_linebr)
+plot(strategy.position_size < 0 ? entry_price  : na, "Entry",
+     color.new(color.yellow, 30), 1, plot.style_linebr)

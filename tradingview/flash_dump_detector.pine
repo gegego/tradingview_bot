@@ -1,0 +1,105 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © trading_bot / Flash Dump Detector v1.1
+//@version=6
+indicator(title="Flash Dump Detector", shorttitle="FLASH DUMP", overlay=true, max_labels_count=500)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+
+// ATR-based body-velocity threshold
+i_atr_len   = input.int(14,    "ATR Lookback (N)",         minval=1,   group="Dump Detection",
+              tooltip="Number of bars used to compute ATR.")
+i_atr_mult  = input.float(3.0, "ATR Multiplier (X)",       minval=0.1, step=0.1, group="Dump Detection",
+              tooltip="Candle body must exceed ATR × X to qualify.")
+
+// Volume-spike threshold
+i_vol_len   = input.int(20,    "Volume SMA Lookback (M)",  minval=1,   group="Dump Detection",
+              tooltip="Number of bars for the volume baseline SMA.")
+i_vol_mult  = input.float(2.5, "Volume Multiplier (Y)",    minval=0.1, step=0.1, group="Dump Detection",
+              tooltip="Volume must exceed SMA × Y to confirm the dump.")
+
+// Visuals
+i_bg_transp = input.int(85,      "Background Transparency",  minval=0, maxval=99, group="Visuals")
+i_lbl_size  = input.string("normal", "Label Size",
+              options=["tiny","small","normal","large","huge"],     group="Visuals")
+i_show_atr  = input.bool(false,  "Show ATR Body-Threshold Line",   group="Visuals")
+
+// ─────────────────────────────────────────────
+// CALCULATIONS
+// ─────────────────────────────────────────────
+
+body          = open - close                // positive on a bearish candle
+atr           = ta.atr(i_atr_len)
+body_thresh   = atr * i_atr_mult
+
+vol_sma       = ta.sma(volume, i_vol_len)
+vol_thresh    = vol_sma * i_vol_mult
+
+// ─────────────────────────────────────────────
+// DETECTION
+// ─────────────────────────────────────────────
+
+is_bearish    = close < open
+body_ok       = body > body_thresh
+vol_ok        = volume > vol_thresh
+
+flash_dump    = is_bearish and body_ok and vol_ok
+
+// ─────────────────────────────────────────────
+// VISUALS
+// ─────────────────────────────────────────────
+
+// Red background on dump bar
+bgcolor(flash_dump ? color.new(color.red, i_bg_transp) : na)
+
+// Optional: ATR body-threshold diagnostic line
+plot(i_show_atr ? body_thresh : na, "ATR Body Threshold", color.new(color.orange, 60), 1)
+
+// Resolve label size string → built-in constant
+lbl_sz = i_lbl_size == "tiny"   ? size.tiny   :
+         i_lbl_size == "small"  ? size.small  :
+         i_lbl_size == "large"  ? size.large  :
+         i_lbl_size == "huge"   ? size.huge   :
+                                  size.normal
+
+// Label above the candle with dump stats
+if flash_dump
+    label.new(
+     bar_index, high,
+     text      = "⚠️ FLASH DUMP!\nDrop: " + str.tostring(math.round(body / open * 100, 2)) + "%" +
+                 "\nBody: "   + str.tostring(math.round(body,       4)) +
+                 " / ATR×"   + str.tostring(i_atr_mult) + "=" + str.tostring(math.round(body_thresh, 4)) +
+                 "\nVol ×"   + str.tostring(math.round(volume / vol_sma, 1)) + " SMA",
+     yloc      = yloc.abovebar,
+     color     = color.new(color.red, 10),
+     textcolor = color.white,
+     style     = label.style_label_down,
+     size      = lbl_sz)
+
+// Triangle marker (shows in strategy tester / indicator overview)
+plotshape(flash_dump, "Flash Dump", shape.triangledown, location.abovebar,
+          color.red, size=size.small, text="DUMP")
+
+// ─────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────
+
+// Classic alertcondition — set via the Alerts dialog; supports {{ticker}}, {{close}}, {{time}}
+alertcondition(flash_dump,
+    title   = "Flash Dump Detected",
+    message = "⚠️ FLASH DUMP | {{ticker}} | TF: {{interval}} | Close: {{close}} | Time: {{time}}")
+
+// Inline alert() — fires on bar close, webhook-compatible with full context
+if flash_dump
+    alert(
+     "⚠️ FLASH DUMP DETECTED\n"                                                            +
+     "Ticker : " + syminfo.tickerid + "\n"                                                  +
+     "Time   : " + str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\n"      +
+     "Close  : " + str.tostring(close) + "\n"                                               +
+     "Drop   : " + str.tostring(math.round(body / open * 100, 3)) + "%\n"                  +
+     "Body   : " + str.tostring(math.round(body, 4)) +
+                   " (threshold=" + str.tostring(math.round(body_thresh, 4)) + ")\n"        +
+     "Volume : " + str.tostring(volume) +
+                   " (threshold=" + str.tostring(math.round(vol_thresh, 0)) + ")",
+     alert.freq_once_per_bar_close)
